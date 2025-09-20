@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import japanize_matplotlib
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
+from scipy.interpolate import interp1d
 import io
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle
@@ -38,6 +39,10 @@ try:
 except Exception:
     pass
 
+# 白色板スペクトルデータ（仮置き）
+WHITE_BOARD_SPECTRUM = np.array([
+    2824, 1152, 2967, 1046, 1477, 1899, 514, 543, 2768, 315, 545, 89, 174, 126, 243, 1390, 61, 32])
+
 st.set_page_config(page_title="irodori 解析アプリ", layout="wide")
 
 st.title("📊 主成分分析（PCA）レポート作成アプリケーション")
@@ -58,6 +63,8 @@ if 'loading_notes' not in st.session_state:
     st.session_state.loading_notes = ""
 if 'overall_conclusion' not in st.session_state:
     st.session_state.overall_conclusion = ""
+if 'corrected_spectrum_notes' not in st.session_state:
+    st.session_state.corrected_spectrum_notes = ""
 
 def load_and_prepare_data(df):
     label_col = None
@@ -78,6 +85,22 @@ def load_and_prepare_data(df):
     features = df[feature_columns].values
     return features, labels, feature_columns, label_col
 
+def apply_white_board_correction(features, white_board_spectrum):
+    """白色板スペクトルによる補正を適用"""
+    # 白色板スペクトルの長さを特徴量数に合わせる
+    if len(white_board_spectrum) != features.shape[1]:
+        # 線形補間で白色板スペクトルを調整
+        original_indices = np.linspace(0, len(white_board_spectrum) - 1, len(white_board_spectrum))
+        new_indices = np.linspace(0, len(white_board_spectrum) - 1, features.shape[1])
+        f = interp1d(original_indices, white_board_spectrum, kind='linear')
+        adjusted_white_board = f(new_indices)
+    else:
+        adjusted_white_board = white_board_spectrum
+
+    # 白色板補正を適用（各特徴量を白色板スペクトルで除算）
+    corrected_features = features / adjusted_white_board
+    return corrected_features
+
 def create_mean_spectrum_plot(features, labels, feature_columns, label_col):
     """ラベルごとの平均スペクトルグラフを作成"""
     if labels is None:
@@ -93,6 +116,55 @@ def create_mean_spectrum_plot(features, labels, feature_columns, label_col):
         mask = labels == label
         mean_spectrum = np.mean(features[mask], axis=0)
         std_spectrum = np.std(features[mask], axis=0)
+
+        # 平均スペクトルをプロット（太線）
+        ax.plot(
+            range(len(feature_columns)), mean_spectrum,
+            marker=markers[i % len(markers)], linewidth=2.5, markersize=6,
+            color=colors[i % len(colors)], label=f'クラス {label}'
+        )
+
+        # 標準偏差の範囲を塗りつぶし
+        ax.fill_between(
+            range(len(feature_columns)),
+            mean_spectrum - std_spectrum,
+            mean_spectrum + std_spectrum,
+            alpha=0.15, color=colors[i % len(colors)]
+        )
+
+    ax.set_xlabel('波長 (nm)', fontsize=24)
+    ax.set_ylabel('強度 (arb. unit)', fontsize=24)
+
+    # X軸のラベルを設定
+    ax.set_xticks(range(len(feature_columns)))
+    ax.set_xticklabels(feature_columns, rotation=45, ha='right')
+
+    ax.grid(True, alpha=0.3, axis='y')
+    ax.tick_params(axis='both', which='major', direction='in', top=True, right=True, length=8, width=1.2, labeltop=False, labelright=False)
+    ax.tick_params(axis='both', which='minor', direction='in', top=True, right=True, length=4, width=1.0)
+    ax.minorticks_on()
+    ax.legend(frameon=True, loc='best', fontsize=16)
+
+    return fig
+
+def create_corrected_mean_spectrum_plot(features, labels, feature_columns, label_col, white_board_spectrum):
+    """白色板補正後のラベルごとの平均スペクトルグラフを作成"""
+    if labels is None:
+        return None
+
+    # 白色板補正を適用
+    corrected_features = apply_white_board_correction(features, white_board_spectrum)
+
+    fig, ax = plt.subplots(figsize=(12, 8))
+
+    unique_labels = np.unique(labels)
+    colors = plt.cm.tab10(np.linspace(0, 1, max(10, len(unique_labels))))
+    markers = ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*', 'h']
+
+    for i, label in enumerate(unique_labels):
+        mask = labels == label
+        mean_spectrum = np.mean(corrected_features[mask], axis=0)
+        std_spectrum = np.std(corrected_features[mask], axis=0)
 
         # 平均スペクトルをプロット（太線）
         ax.plot(
@@ -286,10 +358,17 @@ def create_pdf_report(report_data):
 
     # グラフと考察
     if report_data['mean_spectrum_fig']:
-        story.append(Paragraph("ラベルごとの平均スペクトル", heading_style))
+        story.append(Paragraph("ラベルごとの平均スペクトル（元データ）", heading_style))
         story.append(Image(report_data['mean_spectrum_fig'], width=6*inch, height=4*inch))
         if report_data['mean_spectrum_notes']:
             story.append(Paragraph(f"<b>考察:</b> {report_data['mean_spectrum_notes']}", normal_style))
+        story.append(Spacer(1, 20))
+
+    if report_data.get('corrected_spectrum_fig'):
+        story.append(Paragraph("ラベルごとの平均スペクトル（白色板補正後）", heading_style))
+        story.append(Image(report_data['corrected_spectrum_fig'], width=6*inch, height=4*inch))
+        if report_data.get('corrected_spectrum_notes'):
+            story.append(Paragraph(f"<b>考察:</b> {report_data['corrected_spectrum_notes']}", normal_style))
         story.append(Spacer(1, 20))
 
     story.append(Paragraph("PCA散布図 (PC1 vs PC2)", heading_style))
@@ -429,18 +508,37 @@ def main():
             # ラベルごとの平均スペクトルグラフを表示
             if labels is not None:
                 st.subheader("📈 ラベルごとの平均スペクトル")
-                mean_spectrum_fig = create_mean_spectrum_plot(features, labels, feature_columns, label_col)
-                if mean_spectrum_fig:
-                    st.pyplot(mean_spectrum_fig)
 
-                    # 考察用テキストボックス
-                    st.markdown("**📝 このグラフに関する考察や結果を記入してください:**")
-                    st.session_state.mean_spectrum_notes = st.text_area(
-                        "平均スペクトルグラフの考察",
-                        value=st.session_state.mean_spectrum_notes,
-                        height=100,
-                        placeholder="このグラフから分かったこと、クラス間の違い、特徴的なパターンなどを記入してください..."
-                    )
+                # タブで元データと補正データを分ける
+                tab_original, tab_corrected = st.tabs(["元データ", "白色板補正後"])
+
+                with tab_original:
+                    mean_spectrum_fig = create_mean_spectrum_plot(features, labels, feature_columns, label_col)
+                    if mean_spectrum_fig:
+                        st.pyplot(mean_spectrum_fig)
+
+                        # 考察用テキストボックス
+                        st.markdown("**📝 このグラフに関する考察や結果を記入してください:**")
+                        st.session_state.mean_spectrum_notes = st.text_area(
+                            "平均スペクトルグラフの考察",
+                            value=st.session_state.mean_spectrum_notes,
+                            height=100,
+                            placeholder="このグラフから分かったこと、クラス間の違い、特徴的なパターンなどを記入してください..."
+                        )
+
+                with tab_corrected:
+                    corrected_spectrum_fig = create_corrected_mean_spectrum_plot(features, labels, feature_columns, label_col, WHITE_BOARD_SPECTRUM)
+                    if corrected_spectrum_fig:
+                        st.pyplot(corrected_spectrum_fig)
+
+                        # 考察用テキストボックス
+                        st.markdown("**📝 白色板補正後のグラフに関する考察や結果を記入してください:**")
+                        st.session_state.corrected_spectrum_notes = st.text_area(
+                            "白色板補正後スペクトルグラフの考察",
+                            value=st.session_state.corrected_spectrum_notes,
+                            height=100,
+                            placeholder="補正前後での違い、クラス間の違いの変化、特徴的なパターンなどを記入してください..."
+                        )
                 st.markdown("---")
 
             st.subheader("🔬 PCA分析実行")
@@ -580,6 +678,7 @@ def main():
                         try:
                             # 図を画像として保存
                             mean_spectrum_img = save_figure_as_image(mean_spectrum_fig) if labels is not None else None
+                            corrected_spectrum_img = save_figure_as_image(corrected_spectrum_fig) if labels is not None else None
                             pca_scatter_img = save_figure_as_image(fig_pc12)
                             pca_scatter_img_pc13 = save_figure_as_image(fig_pc13) if fig_pc13 is not None else None
                             pca_scatter_img_pc23 = save_figure_as_image(fig_pc23) if fig_pc23 is not None else None
@@ -600,6 +699,7 @@ def main():
                                 'total_variance': sum(explained_variance_ratio[:3]) if len(explained_variance_ratio) >= 3 else sum(explained_variance_ratio[:2]),
                                 'pc3_variance': (explained_variance_ratio[2] if len(explained_variance_ratio) >= 3 else None),
                                 'mean_spectrum_fig': mean_spectrum_img,
+                                'corrected_spectrum_fig': corrected_spectrum_img,
                                 'pca_scatter_fig': pca_scatter_img,
                                 'pca_scatter_fig_pc13': pca_scatter_img_pc13,
                                 'pca_scatter_fig_pc23': pca_scatter_img_pc23,
@@ -607,6 +707,7 @@ def main():
                                 'loading_fig_pc2': loading_img_pc2,
                                 'loading_fig_pc3': loading_img_pc3,
                                 'mean_spectrum_notes': st.session_state.mean_spectrum_notes,
+                                'corrected_spectrum_notes': st.session_state.corrected_spectrum_notes,
                                 'pca_scatter_notes': st.session_state.pca_scatter_notes,
                                 'loading_notes': st.session_state.loading_notes,
                                 'overall_conclusion': st.session_state.overall_conclusion,
