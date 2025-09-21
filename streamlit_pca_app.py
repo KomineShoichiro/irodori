@@ -8,7 +8,7 @@ from sklearn.preprocessing import StandardScaler
 from scipy.interpolate import interp1d
 import io
 from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.pdfgen import canvas
@@ -43,10 +43,76 @@ except Exception:
 WHITE_BOARD_SPECTRUM = np.array([
     2824, 1152, 2967, 1046, 1477, 1899, 514, 543, 2768, 315, 545, 89, 174, 126, 243, 1390, 61, 32])
 
-st.set_page_config(page_title="irodori 解析アプリ", layout="wide")
+st.set_page_config(
+    page_title="irodori 解析アプリ",
+    layout="wide",
+    initial_sidebar_state="expanded",
+    page_icon="📊"
+)
 
-st.title("📊 主成分分析（PCA）レポート作成アプリケーション")
-st.markdown("---")
+# カスタムCSSでアプリの見た目を改善
+st.markdown("""
+<style>
+    .main-header {
+        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+        padding: 2rem;
+        border-radius: 10px;
+        margin-bottom: 2rem;
+        text-align: center;
+        color: white;
+    }
+    .main-header h1 {
+        margin: 0;
+        font-size: 2.5rem;
+        font-weight: bold;
+    }
+    .main-header p {
+        margin: 0.5rem 0 0 0;
+        font-size: 1.2rem;
+        opacity: 0.9;
+    }
+    .metric-card {
+        background: white;
+        padding: 1rem;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        border-left: 4px solid #667eea;
+    }
+    .section-header {
+        background: linear-gradient(90deg, #f093fb 0%, #f5576c 100%);
+        color: white;
+        padding: 1rem;
+        border-radius: 8px;
+        margin: 1rem 0;
+        font-size: 1.5rem;
+        font-weight: bold;
+    }
+    .sidebar .sidebar-content {
+        background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
+    }
+    .stButton > button {
+        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border: none;
+        border-radius: 8px;
+        padding: 0.5rem 1rem;
+        font-weight: bold;
+        transition: all 0.3s ease;
+    }
+    .stButton > button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# メインヘッダー
+st.markdown("""
+<div class="main-header">
+    <h1>📊 irodori 解析アプリ</h1>
+    <p>主成分分析（PCA）レポート作成アプリケーション</p>
+</div>
+""", unsafe_allow_html=True)
 
 # セッション状態の初期化
 if 'report_title' not in st.session_state:
@@ -65,6 +131,16 @@ if 'overall_conclusion' not in st.session_state:
     st.session_state.overall_conclusion = ""
 if 'corrected_spectrum_notes' not in st.session_state:
     st.session_state.corrected_spectrum_notes = ""
+if 'label_colors' not in st.session_state:
+    st.session_state.label_colors = {}
+if 'current_labels' not in st.session_state:
+    st.session_state.current_labels = []
+if 'use_corrected_data_for_pca' not in st.session_state:
+    st.session_state.use_corrected_data_for_pca = False
+if 'selected_labels' not in st.session_state:
+    st.session_state.selected_labels = []
+if 'show_all_samples' not in st.session_state:
+    st.session_state.show_all_samples = True
 
 def load_and_prepare_data(df):
     label_col = None
@@ -84,6 +160,129 @@ def load_and_prepare_data(df):
 
     features = df[feature_columns].values
     return features, labels, feature_columns, label_col
+
+def get_label_colors(labels):
+    """ラベルごとの色を取得（ユーザー設定またはデフォルト）"""
+    if labels is None:
+        return {}
+
+    unique_labels = np.unique(labels)
+    colors = {}
+
+    # デフォルトカラーパレット
+    default_colors = [
+        '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+        '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
+    ]
+
+    for i, label in enumerate(unique_labels):
+        if label in st.session_state.label_colors:
+            colors[label] = st.session_state.label_colors[label]
+        else:
+            colors[label] = default_colors[i % len(default_colors)]
+
+    return colors
+
+def create_color_picker_ui(labels):
+    """色選択UIを作成"""
+    if labels is None:
+        return
+
+    unique_labels = np.unique(labels)
+
+    # ラベルが変更された場合は色設定をリセット
+    if st.session_state.current_labels != list(unique_labels):
+        st.session_state.current_labels = list(unique_labels)
+        st.session_state.label_colors = {}
+
+    st.sidebar.markdown("### 🎨 グラフ色設定")
+
+    # デフォルトカラーパレット
+    default_colors = [
+        '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+        '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
+    ]
+
+    for i, label in enumerate(unique_labels):
+        default_color = default_colors[i % len(default_colors)]
+        current_color = st.session_state.label_colors.get(label, default_color)
+
+        selected_color = st.sidebar.color_picker(
+            f"ラベル '{label}' の色",
+            value=current_color,
+            key=f"color_{label}"
+        )
+
+        st.session_state.label_colors[label] = selected_color
+
+    # 色リセットボタン
+    if st.sidebar.button("🎨 色をデフォルトにリセット"):
+        st.session_state.label_colors = {}
+        st.rerun()
+
+def create_sample_selection_ui(labels):
+    """サンプル選択UIを作成"""
+    if labels is None:
+        return
+
+    unique_labels = np.unique(labels)
+
+    # ラベルが変更された場合は選択をリセット
+    if st.session_state.current_labels != list(unique_labels):
+        st.session_state.current_labels = list(unique_labels)
+        st.session_state.selected_labels = list(unique_labels)
+        st.session_state.show_all_samples = True
+
+    st.sidebar.markdown("### 📊 表示サンプル選択")
+
+    # 全サンプル表示の切り替え
+    show_all = st.sidebar.checkbox(
+        "すべてのサンプルを表示",
+        value=st.session_state.show_all_samples,
+        key="show_all_samples_checkbox",
+        help="チェックを外すと特定のラベルのみを選択できます"
+    )
+
+    st.session_state.show_all_samples = show_all
+
+    if not show_all:
+        # ラベル選択（マルチセレクト）
+        selected_labels = st.sidebar.multiselect(
+            "表示するラベルを選択",
+            options=unique_labels,
+            default=st.session_state.selected_labels if st.session_state.selected_labels else unique_labels,
+            key="label_multiselect",
+            help="グラフに表示するラベルを選択してください"
+        )
+
+        st.session_state.selected_labels = selected_labels
+
+        # 選択されたラベルの情報を表示
+        if selected_labels:
+            st.sidebar.success(f"✅ {len(selected_labels)}個のラベルを選択中")
+            for label in selected_labels:
+                count = np.sum(labels == label)
+                st.sidebar.write(f"  • {label}: {count}サンプル")
+        else:
+            st.sidebar.warning("⚠️ 表示するラベルが選択されていません")
+    else:
+        st.session_state.selected_labels = list(unique_labels)
+        st.sidebar.info("✅ すべてのサンプルを表示中")
+
+def get_filtered_data(features, labels):
+    """選択されたサンプルのみを返す"""
+    if labels is None or st.session_state.show_all_samples:
+        return features, labels
+
+    if not st.session_state.selected_labels:
+        return features, labels
+
+    # 選択されたラベルのサンプルのみを抽出
+    mask = np.isin(labels, st.session_state.selected_labels)
+    filtered_features = features[mask]
+    filtered_labels = labels[mask] if labels is not None else None
+
+    return filtered_features, filtered_labels
 
 def apply_white_board_correction(features, white_board_spectrum):
     """白色板スペクトルによる補正を適用"""
@@ -109,7 +308,7 @@ def create_mean_spectrum_plot(features, labels, feature_columns, label_col):
     fig, ax = plt.subplots(figsize=(12, 8))
 
     unique_labels = np.unique(labels)
-    colors = plt.cm.tab10(np.linspace(0, 1, max(10, len(unique_labels))))
+    label_colors = get_label_colors(labels)
     markers = ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*', 'h']
 
     for i, label in enumerate(unique_labels):
@@ -117,11 +316,14 @@ def create_mean_spectrum_plot(features, labels, feature_columns, label_col):
         mean_spectrum = np.mean(features[mask], axis=0)
         std_spectrum = np.std(features[mask], axis=0)
 
+        # ユーザー設定の色またはデフォルト色を使用
+        color = label_colors.get(label, plt.cm.tab10(i))
+
         # 平均スペクトルをプロット（太線）
         ax.plot(
             range(len(feature_columns)), mean_spectrum,
             marker=markers[i % len(markers)], linewidth=2.5, markersize=6,
-            color=colors[i % len(colors)], label=f'クラス {label}'
+            color=color, label=f'{label}'
         )
 
         # 標準偏差の範囲を塗りつぶし
@@ -129,7 +331,7 @@ def create_mean_spectrum_plot(features, labels, feature_columns, label_col):
             range(len(feature_columns)),
             mean_spectrum - std_spectrum,
             mean_spectrum + std_spectrum,
-            alpha=0.15, color=colors[i % len(colors)]
+            alpha=0.15, color=color
         )
 
     ax.set_xlabel('波長 (nm)', fontsize=24)
@@ -158,7 +360,7 @@ def create_corrected_mean_spectrum_plot(features, labels, feature_columns, label
     fig, ax = plt.subplots(figsize=(12, 8))
 
     unique_labels = np.unique(labels)
-    colors = plt.cm.tab10(np.linspace(0, 1, max(10, len(unique_labels))))
+    label_colors = get_label_colors(labels)
     markers = ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*', 'h']
 
     for i, label in enumerate(unique_labels):
@@ -166,11 +368,14 @@ def create_corrected_mean_spectrum_plot(features, labels, feature_columns, label
         mean_spectrum = np.mean(corrected_features[mask], axis=0)
         std_spectrum = np.std(corrected_features[mask], axis=0)
 
+        # ユーザー設定の色またはデフォルト色を使用
+        color = label_colors.get(label, plt.cm.tab10(i))
+
         # 平均スペクトルをプロット（太線）
         ax.plot(
             range(len(feature_columns)), mean_spectrum,
             marker=markers[i % len(markers)], linewidth=2.5, markersize=6,
-            color=colors[i % len(colors)], label=f'クラス {label}'
+            color=color, label=f'{label}'
         )
 
         # 標準偏差の範囲を塗りつぶし
@@ -178,7 +383,7 @@ def create_corrected_mean_spectrum_plot(features, labels, feature_columns, label
             range(len(feature_columns)),
             mean_spectrum - std_spectrum,
             mean_spectrum + std_spectrum,
-            alpha=0.15, color=colors[i % len(colors)]
+            alpha=0.15, color=color
         )
 
     ax.set_xlabel('波長 (nm)', fontsize=24)
@@ -213,15 +418,18 @@ def create_pca_scatter_plot(pca_result, labels, explained_variance_ratio, dims=(
     x_idx, y_idx = dims
     if labels is not None:
         unique_labels = np.unique(labels)
-        colors = plt.cm.tab10(np.linspace(0, 1, max(10, len(unique_labels))))
+        label_colors = get_label_colors(labels)
         markers = ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*', 'h']
 
         for i, label in enumerate(unique_labels):
             mask = labels == label
+            # ユーザー設定の色またはデフォルト色を使用
+            color = label_colors.get(label, plt.cm.tab10(i))
+
             ax.scatter(
                 pca_result[mask, x_idx], pca_result[mask, y_idx],
-                c=[colors[i % len(colors)]], marker=markers[i % len(markers)], s=100, alpha=0.9,
-                edgecolors='black', linewidth=0.5, label=f'クラス {label}'
+                c=[color], marker=markers[i % len(markers)], s=100, alpha=0.9,
+                edgecolors='black', linewidth=0.5, label=f'{label}'
             )
     else:
         ax.scatter(
@@ -304,7 +512,7 @@ def create_loading_plot(pca, feature_columns, pc_index: int = 0):
 def create_pdf_report(report_data):
     """PDFレポートを作成"""
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4)
+    doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=72, bottomMargin=72, leftMargin=72, rightMargin=72)
     story = []
 
     # スタイルの設定
@@ -312,120 +520,229 @@ def create_pdf_report(report_data):
     title_style = ParagraphStyle(
         'CustomTitle',
         parent=styles['Heading1'],
-        fontSize=24,
-        spaceAfter=30,
+        fontSize=28,
+        spaceAfter=40,
         alignment=1,  # 中央揃え
-        fontName='HeiseiKakuGo-W5'
+        fontName='HeiseiKakuGo-W5',
+        textColor=colors.HexColor('#2c3e50')
     )
     heading_style = ParagraphStyle(
         'CustomHeading',
         parent=styles['Heading2'],
-        fontSize=16,
-        spaceAfter=12,
-        spaceBefore=20,
-        fontName='HeiseiKakuGo-W5'
+        fontSize=18,
+        spaceAfter=15,
+        spaceBefore=25,
+        fontName='HeiseiKakuGo-W5',
+        textColor=colors.HexColor('#34495e'),
+        borderWidth=1,
+        borderColor=colors.HexColor('#3498db'),
+        borderPadding=8,
+        backColor=colors.HexColor('#ecf0f1')
     )
-    normal_style = styles['Normal']
-    normal_style.fontName = 'HeiseiKakuGo-W5'
+    normal_style = ParagraphStyle(
+        'CustomNormal',
+        parent=styles['Normal'],
+        fontSize=12,
+        spaceAfter=12,
+        fontName='HeiseiKakuGo-W5',
+        textColor=colors.HexColor('#2c3e50')
+    )
+    info_style = ParagraphStyle(
+        'InfoStyle',
+        parent=styles['Normal'],
+        fontSize=11,
+        spaceAfter=8,
+        fontName='HeiseiKakuGo-W5',
+        textColor=colors.HexColor('#7f8c8d'),
+        leftIndent=20
+    )
 
     # タイトル
     story.append(Paragraph(report_data['title'], title_style))
-    story.append(Spacer(1, 20))
+    story.append(Spacer(1, 30))
 
-    # 基本情報
+    # 基本情報（カード形式）
+    info_data = []
     if report_data['author']:
-        story.append(Paragraph(f"<b>作成者:</b> {report_data['author']}", normal_style))
+        info_data.append(['作成者', report_data['author']])
     if report_data['date']:
-        story.append(Paragraph(f"<b>作成日:</b> {report_data['date']}", normal_style))
-    story.append(Spacer(1, 20))
+        info_data.append(['作成日', report_data['date']])
+
+    if info_data:
+        info_table = Table(info_data, colWidths=[2*inch, 4*inch])
+        info_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#f8f9fa')),
+            ('TEXTCOLOR', (0, 0), (-1, -1), colors.HexColor('#2c3e50')),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (0, -1), 'HeiseiKakuGo-W5'),
+            ('FONTNAME', (1, 0), (1, -1), 'HeiseiKakuGo-W5'),
+            ('FONTSIZE', (0, 0), (-1, -1), 12),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
+            ('TOPPADDING', (0, 0), (-1, -1), 12),
+            ('LEFTPADDING', (0, 0), (-1, -1), 15),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 15),
+            ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#dee2e6')),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ]))
+        story.append(info_table)
+        story.append(Spacer(1, 25))
 
     # データ概要
-    story.append(Paragraph("データ概要", heading_style))
-    story.append(Paragraph(f"<b>データ形状:</b> {report_data['data_shape']}", normal_style))
-    story.append(Paragraph(f"<b>特徴量数:</b> {report_data['feature_count']}", normal_style))
+    story.append(Paragraph("📊 データ概要", heading_style))
+
+    overview_data = [
+        ['項目', '値'],
+        ['データ形状', report_data['data_shape']],
+        ['特徴量数', str(report_data['feature_count'])],
+    ]
     if report_data['label_info']:
-        story.append(Paragraph(f"<b>ラベル情報:</b> {report_data['label_info']}", normal_style))
-    story.append(Spacer(1, 20))
+        overview_data.append(['ラベル情報', report_data['label_info']])
+    if 'sample_selection' in report_data:
+        overview_data.append(['表示サンプル', report_data['sample_selection']])
+
+    overview_table = Table(overview_data, colWidths=[2*inch, 4*inch])
+    overview_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3498db')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('FONTNAME', (0, 0), (-1, 0), 'HeiseiKakuGo-W5'),
+        ('FONTNAME', (0, 1), (-1, -1), 'HeiseiKakuGo-W5'),
+        ('FONTSIZE', (0, 0), (-1, -1), 12),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
+        ('TOPPADDING', (0, 0), (-1, -1), 12),
+        ('LEFTPADDING', (0, 0), (-1, -1), 15),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 15),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#f8f9fa')),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black),
+    ]))
+    story.append(overview_table)
+    story.append(Spacer(1, 25))
 
     # PCA結果（見出し順の整理）
-    story.append(Paragraph("PCA分析結果の要約", heading_style))
-    story.append(Paragraph(f"<b>第1主成分寄与率:</b> {report_data['pc1_variance']:.1%}", normal_style))
-    story.append(Paragraph(f"<b>第2主成分寄与率:</b> {report_data['pc2_variance']:.1%}", normal_style))
+    story.append(Paragraph("🔬 PCA分析結果の要約", heading_style))
+
+    # 使用データの情報を追加
+    if 'pca_data_type' in report_data:
+        story.append(Paragraph(f"<b>📊 使用データ:</b> {report_data['pca_data_type']}", normal_style))
+        story.append(Spacer(1, 15))
+
+    pca_data = [
+        ['主成分', '寄与率', '累積寄与率'],
+        ['第1主成分', f"{report_data['pc1_variance']:.1%}", f"{report_data['pc1_variance']:.1%}"],
+        ['第2主成分', f"{report_data['pc2_variance']:.1%}", f"{report_data['pc1_variance'] + report_data['pc2_variance']:.1%}"],
+    ]
+
     if 'pc3_variance' in report_data and report_data['pc3_variance'] is not None:
-        story.append(Paragraph(f"<b>第3主成分寄与率:</b> {report_data['pc3_variance']:.1%}", normal_style))
-    story.append(Paragraph(f"<b>累積寄与率:</b> {report_data['total_variance']:.1%}", normal_style))
-    story.append(Spacer(1, 20))
+        pca_data.append(['第3主成分', f"{report_data['pc3_variance']:.1%}", f"{report_data['total_variance']:.1%}"])
+
+    pca_table = Table(pca_data, colWidths=[2*inch, 1.5*inch, 1.5*inch])
+    pca_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e74c3c')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'HeiseiKakuGo-W5'),
+        ('FONTNAME', (0, 1), (-1, -1), 'HeiseiKakuGo-W5'),
+        ('FONTSIZE', (0, 0), (-1, -1), 12),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
+        ('TOPPADDING', (0, 0), (-1, -1), 12),
+        ('LEFTPADDING', (0, 0), (-1, -1), 15),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 15),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#f8f9fa')),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+    ]))
+    story.append(pca_table)
+    story.append(Spacer(1, 25))
 
     # グラフと考察
     if report_data['mean_spectrum_fig']:
-        story.append(Paragraph("ラベルごとの平均スペクトル（元データ）", heading_style))
+        story.append(PageBreak())  # 新しいページに開始
+        story.append(Paragraph("📈 ラベルごとの平均スペクトル（生データ）", heading_style))
         story.append(Image(report_data['mean_spectrum_fig'], width=6*inch, height=4*inch))
         if report_data['mean_spectrum_notes']:
-            story.append(Paragraph(f"<b>考察:</b> {report_data['mean_spectrum_notes']}", normal_style))
-        story.append(Spacer(1, 20))
+            story.append(Paragraph(f"<b>💭 考察:</b> {report_data['mean_spectrum_notes']}", normal_style))
+        story.append(Spacer(1, 25))
 
     if report_data.get('corrected_spectrum_fig'):
-        story.append(Paragraph("ラベルごとの平均スペクトル（白色板補正後）", heading_style))
+        story.append(PageBreak())  # 新しいページに開始
+        story.append(Paragraph("📈 ラベルごとの平均スペクトル（白色板補正後）", heading_style))
         story.append(Image(report_data['corrected_spectrum_fig'], width=6*inch, height=4*inch))
         if report_data.get('corrected_spectrum_notes'):
-            story.append(Paragraph(f"<b>考察:</b> {report_data['corrected_spectrum_notes']}", normal_style))
-        story.append(Spacer(1, 20))
+            story.append(Paragraph(f"<b>💭 考察:</b> {report_data['corrected_spectrum_notes']}", normal_style))
+        story.append(Spacer(1, 25))
 
-    story.append(Paragraph("PCA散布図 (PC1 vs PC2)", heading_style))
+    # PCA散布図の見出しに使用データの情報を追加
+    pca_data_type_text = ""
+    if 'pca_data_type' in report_data:
+        pca_data_type_text = f" ({report_data['pca_data_type']})"
+
+    story.append(PageBreak())  # 新しいページに開始
+    story.append(Paragraph(f"📊 PCA散布図 (PC1 vs PC2){pca_data_type_text}", heading_style))
     story.append(Image(report_data['pca_scatter_fig'], width=6*inch, height=4*inch))
     if report_data['pca_scatter_notes']:
-        story.append(Paragraph(f"<b>考察:</b> {report_data['pca_scatter_notes']}", normal_style))
-    story.append(Spacer(1, 20))
+        story.append(Paragraph(f"<b>💭 考察:</b> {report_data['pca_scatter_notes']}", normal_style))
+    story.append(Spacer(1, 25))
 
     if 'pca_scatter_fig_pc13' in report_data and report_data['pca_scatter_fig_pc13'] is not None:
-        story.append(Paragraph("PCA散布図 (PC1 vs PC3)", heading_style))
+        story.append(PageBreak())  # 新しいページに開始
+        story.append(Paragraph(f"📊 PCA散布図 (PC1 vs PC3){pca_data_type_text}", heading_style))
         story.append(Image(report_data['pca_scatter_fig_pc13'], width=6*inch, height=4*inch))
-        story.append(Spacer(1, 20))
+        story.append(Spacer(1, 25))
 
     if 'pca_scatter_fig_pc23' in report_data and report_data['pca_scatter_fig_pc23'] is not None:
-        story.append(Paragraph("PCA散布図 (PC2 vs PC3)", heading_style))
+        story.append(PageBreak())  # 新しいページに開始
+        story.append(Paragraph(f"📊 PCA散布図 (PC2 vs PC3){pca_data_type_text}", heading_style))
         story.append(Image(report_data['pca_scatter_fig_pc23'], width=6*inch, height=4*inch))
-        story.append(Spacer(1, 20))
+        story.append(Spacer(1, 25))
 
-    story.append(Paragraph("負荷率グラフ (PC1)", heading_style))
+    story.append(PageBreak())  # 新しいページに開始
+    story.append(Paragraph(f"📉 負荷率グラフ (PC1){pca_data_type_text}", heading_style))
     story.append(Image(report_data['loading_fig'], width=6*inch, height=3*inch))
     if report_data['loading_notes']:
-        story.append(Paragraph(f"<b>考察:</b> {report_data['loading_notes']}", normal_style))
-    story.append(Spacer(1, 20))
+        story.append(Paragraph(f"<b>💭 考察:</b> {report_data['loading_notes']}", normal_style))
+    story.append(Spacer(1, 25))
 
     if 'loading_fig_pc2' in report_data and report_data['loading_fig_pc2'] is not None:
-        story.append(Paragraph("負荷率グラフ (PC2)", heading_style))
+        story.append(PageBreak())  # 新しいページに開始
+        story.append(Paragraph(f"📉 負荷率グラフ (PC2){pca_data_type_text}", heading_style))
         story.append(Image(report_data['loading_fig_pc2'], width=6*inch, height=3*inch))
-        story.append(Spacer(1, 20))
+        story.append(Spacer(1, 25))
 
     if 'loading_fig_pc3' in report_data and report_data['loading_fig_pc3'] is not None:
-        story.append(Paragraph("負荷率グラフ (PC3)", heading_style))
+        story.append(PageBreak())  # 新しいページに開始
+        story.append(Paragraph(f"📉 負荷率グラフ (PC3){pca_data_type_text}", heading_style))
         story.append(Image(report_data['loading_fig_pc3'], width=6*inch, height=3*inch))
-        story.append(Spacer(1, 20))
+        story.append(Spacer(1, 25))
 
     # 総合考察
     if report_data['overall_conclusion']:
-        story.append(Paragraph("総合考察", heading_style))
+        story.append(PageBreak())  # 新しいページに開始
+        story.append(Paragraph("💡 総合考察", heading_style))
         story.append(Paragraph(report_data['overall_conclusion'], normal_style))
-        story.append(Spacer(1, 20))
+        story.append(Spacer(1, 25))
 
     # 特徴量重要度表
-    story.append(Paragraph("特徴量重要度（第1主成分）", heading_style))
+    story.append(PageBreak())  # 新しいページに開始
+    story.append(Paragraph(f"🎯 特徴量重要度（第1主成分）{pca_data_type_text}", heading_style))
     importance_data = [['特徴量', '負荷率', '絶対値']]
     for feature, loading in report_data['feature_importance'][:10]:
         importance_data.append([feature, f"{loading:.3f}", f"{abs(loading):.3f}"])
 
-    importance_table = Table(importance_data)
+    importance_table = Table(importance_data, colWidths=[2*inch, 1.5*inch, 1.5*inch])
     importance_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#9b59b6')),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, 0), 12),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+        ('FONTNAME', (0, 0), (-1, 0), 'HeiseiKakuGo-W5'),
+        ('FONTNAME', (0, 1), (-1, -1), 'HeiseiKakuGo-W5'),
+        ('FONTSIZE', (0, 0), (-1, -1), 12),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
+        ('TOPPADDING', (0, 0), (-1, -1), 12),
+        ('LEFTPADDING', (0, 0), (-1, -1), 15),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 15),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#f8f9fa')),
         ('GRID', (0, 0), (-1, -1), 1, colors.black),
-        ('FONTNAME', (0, 0), (-1, -1), 'HeiseiKakuGo-W5')
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
     ]))
     story.append(importance_table)
 
@@ -441,8 +758,30 @@ def save_figure_as_image(fig):
     return img_buffer
 
 def main():
+    # サイドバーのスタイリング
+    st.sidebar.markdown("""
+    <style>
+    .sidebar .sidebar-content {
+        background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
+    }
+    .sidebar .sidebar-content .block-container {
+        padding-top: 2rem;
+    }
+    .sidebar-header {
+        background: rgba(255,255,255,0.1);
+        padding: 1rem;
+        border-radius: 8px;
+        margin-bottom: 1rem;
+        color: white;
+        text-align: center;
+        font-weight: bold;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
     # レポート情報入力セクション
-    st.sidebar.header("📝 レポート情報")
+    st.sidebar.markdown('<div class="sidebar-header">📝 レポート情報</div>', unsafe_allow_html=True)
+
     st.session_state.report_title = st.sidebar.text_input(
         "レポートタイトル",
         value=st.session_state.report_title,
@@ -464,7 +803,7 @@ def main():
 
     st.sidebar.markdown("---")
 
-    st.sidebar.header("📁 ファイルアップロード")
+    st.sidebar.markdown('<div class="sidebar-header">📁 ファイルアップロード</div>', unsafe_allow_html=True)
     uploaded_file = st.sidebar.file_uploader(
         "CSVファイルを選択してください",
         type=['csv'],
@@ -476,20 +815,44 @@ def main():
             df = pd.read_csv(uploaded_file)
             st.success(f"✅ ファイル '{uploaded_file.name}' を正常に読み込みました")
 
+            # データ概要をカード形式で表示
+            st.markdown('<div class="section-header">📊 データ概要</div>', unsafe_allow_html=True)
+
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("行数", len(df))
+                st.markdown(f"""
+                <div class="metric-card">
+                    <h3 style="margin: 0; color: #667eea;">📈 行数</h3>
+                    <p style="font-size: 2rem; margin: 0.5rem 0; font-weight: bold;">{len(df)}</p>
+                </div>
+                """, unsafe_allow_html=True)
             with col2:
-                st.metric("列数", len(df.columns))
+                st.markdown(f"""
+                <div class="metric-card">
+                    <h3 style="margin: 0; color: #667eea;">📋 列数</h3>
+                    <p style="font-size: 2rem; margin: 0.5rem 0; font-weight: bold;">{len(df.columns)}</p>
+                </div>
+                """, unsafe_allow_html=True)
             with col3:
                 numeric_cols = len(df.select_dtypes(include=[np.number]).columns)
-                st.metric("数値列", numeric_cols)
+                st.markdown(f"""
+                <div class="metric-card">
+                    <h3 style="margin: 0; color: #667eea;">🔢 数値列</h3>
+                    <p style="font-size: 2rem; margin: 0.5rem 0; font-weight: bold;">{numeric_cols}</p>
+                </div>
+                """, unsafe_allow_html=True)
 
             features, labels, feature_columns, label_col = load_and_prepare_data(df)
 
             if len(feature_columns) < 2:
                 st.error("❌ 数値列が2つ以上必要です。")
                 return
+
+            # 色選択UIを表示
+            create_color_picker_ui(labels)
+
+            # サンプル選択UIを表示
+            create_sample_selection_ui(labels)
 
             st.subheader("📋 データ詳細")
             col1, col2 = st.columns(2)
@@ -509,11 +872,13 @@ def main():
             if labels is not None:
                 st.subheader("📈 ラベルごとの平均スペクトル")
 
-                # タブで元データと補正データを分ける
-                tab_original, tab_corrected = st.tabs(["元データ", "白色板補正後"])
+                # タブで生データと補正データを分ける
+                tab_original, tab_corrected = st.tabs(["生データ", "白色板補正後"])
 
                 with tab_original:
-                    mean_spectrum_fig = create_mean_spectrum_plot(features, labels, feature_columns, label_col)
+                    # 選択されたサンプルのみを使用
+                    filtered_features, filtered_labels = get_filtered_data(features, labels)
+                    mean_spectrum_fig = create_mean_spectrum_plot(filtered_features, filtered_labels, feature_columns, label_col)
                     if mean_spectrum_fig:
                         st.pyplot(mean_spectrum_fig)
 
@@ -527,7 +892,9 @@ def main():
                         )
 
                 with tab_corrected:
-                    corrected_spectrum_fig = create_corrected_mean_spectrum_plot(features, labels, feature_columns, label_col, WHITE_BOARD_SPECTRUM)
+                    # 選択されたサンプルのみを使用
+                    filtered_features, filtered_labels = get_filtered_data(features, labels)
+                    corrected_spectrum_fig = create_corrected_mean_spectrum_plot(filtered_features, filtered_labels, feature_columns, label_col, WHITE_BOARD_SPECTRUM)
                     if corrected_spectrum_fig:
                         st.pyplot(corrected_spectrum_fig)
 
@@ -542,31 +909,83 @@ def main():
                 st.markdown("---")
 
             st.subheader("🔬 PCA分析実行")
+
+            # PCA分析用データ選択
+            st.markdown("**📊 PCA分析に使用するデータを選択してください：**")
+            col1, col2 = st.columns(2)
+
+            with col1:
+                use_original = st.radio(
+                    "データ選択",
+                    ["生データ", "白色板補正後データ"],
+                    key="pca_data_selection",
+                    help="PCA分析に使用するデータを選択してください"
+                )
+                st.session_state.use_corrected_data_for_pca = (use_original == "白色板補正後データ")
+
+            with col2:
+                if st.session_state.use_corrected_data_for_pca:
+                    st.info("✅ 白色板補正後データを使用してPCA分析を実行します")
+                else:
+                    st.info("✅ 生データを使用してPCA分析を実行します")
+
+            # PCA分析に使用するデータを決定（選択されたサンプルのみ）
+            filtered_features, filtered_labels = get_filtered_data(features, labels)
+            pca_features = filtered_features
+            if st.session_state.use_corrected_data_for_pca:
+                pca_features = apply_white_board_correction(filtered_features, WHITE_BOARD_SPECTRUM)
+
             with st.spinner("PCA分析を実行中..."):
-                pca_result, pca, explained_variance_ratio = perform_pca_analysis(features)
+                pca_result, pca, explained_variance_ratio = perform_pca_analysis(pca_features)
 
             st.success("✅ PCA分析が完了しました")
 
+            # 使用したデータの情報を表示
+            data_type = "白色板補正後データ" if st.session_state.use_corrected_data_for_pca else "生データ"
+            st.info(f"📊 使用データ: {data_type}")
+
+            # PCA分析結果をカード形式で表示
+            st.markdown('<div class="section-header">🔬 PCA分析結果</div>', unsafe_allow_html=True)
+
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric("第1主成分寄与率", f"{explained_variance_ratio[0]:.1%}")
+                st.markdown(f"""
+                <div class="metric-card">
+                    <h3 style="margin: 0; color: #667eea;">PC1 寄与率</h3>
+                    <p style="font-size: 2rem; margin: 0.5rem 0; font-weight: bold; color: #e74c3c;">{explained_variance_ratio[0]:.1%}</p>
+                </div>
+                """, unsafe_allow_html=True)
             with col2:
-                st.metric("第2主成分寄与率", f"{explained_variance_ratio[1]:.1%}")
+                st.markdown(f"""
+                <div class="metric-card">
+                    <h3 style="margin: 0; color: #667eea;">PC2 寄与率</h3>
+                    <p style="font-size: 2rem; margin: 0.5rem 0; font-weight: bold; color: #e74c3c;">{explained_variance_ratio[1]:.1%}</p>
+                </div>
+                """, unsafe_allow_html=True)
             with col3:
-                if len(explained_variance_ratio) > 2:
-                    st.metric("第3主成分寄与率", f"{explained_variance_ratio[2]:.1%}")
-                else:
-                    st.metric("第3主成分寄与率", "-")
+                pc3_var = explained_variance_ratio[2] if len(explained_variance_ratio) > 2 else 0
+                pc3_display = f"{pc3_var:.1%}" if len(explained_variance_ratio) > 2 else "-"
+                st.markdown(f"""
+                <div class="metric-card">
+                    <h3 style="margin: 0; color: #667eea;">PC3 寄与率</h3>
+                    <p style="font-size: 2rem; margin: 0.5rem 0; font-weight: bold; color: #e74c3c;">{pc3_display}</p>
+                </div>
+                """, unsafe_allow_html=True)
             with col4:
                 total_var = sum(explained_variance_ratio[:3]) if len(explained_variance_ratio) >= 3 else sum(explained_variance_ratio[:2])
-                st.metric("累積寄与率", f"{total_var:.1%}")
+                st.markdown(f"""
+                <div class="metric-card">
+                    <h3 style="margin: 0; color: #667eea;">累積寄与率</h3>
+                    <p style="font-size: 2rem; margin: 0.5rem 0; font-weight: bold; color: #27ae60;">{total_var:.1%}</p>
+                </div>
+                """, unsafe_allow_html=True)
 
             st.subheader("📊 分析結果グラフ")
 
-            # すべての図を事前生成（PDF出力に備える）
-            fig_pc12 = create_pca_scatter_plot(pca_result, labels, explained_variance_ratio, dims=(0, 1))
-            fig_pc13 = create_pca_scatter_plot(pca_result, labels, explained_variance_ratio, dims=(0, 2)) if pca_result.shape[1] >= 3 else None
-            fig_pc23 = create_pca_scatter_plot(pca_result, labels, explained_variance_ratio, dims=(1, 2)) if pca_result.shape[1] >= 3 else None
+            # すべての図を事前生成（PDF出力に備える）- 選択されたサンプルのみを使用
+            fig_pc12 = create_pca_scatter_plot(pca_result, filtered_labels, explained_variance_ratio, dims=(0, 1))
+            fig_pc13 = create_pca_scatter_plot(pca_result, filtered_labels, explained_variance_ratio, dims=(0, 2)) if pca_result.shape[1] >= 3 else None
+            fig_pc23 = create_pca_scatter_plot(pca_result, filtered_labels, explained_variance_ratio, dims=(1, 2)) if pca_result.shape[1] >= 3 else None
             loading_fig = create_loading_plot(pca, feature_columns)
 
             tab1, tab2, tab3, tab4 = st.tabs(["PC1 vs PC2", "PC1 vs PC3", "PC2 vs PC3", "負荷率グラフ（PC1/PC2/PC3）"])
@@ -686,6 +1105,21 @@ def main():
                             loading_img_pc2 = save_figure_as_image(create_loading_plot(pca, feature_columns, pc_index=1))
                             loading_img_pc3 = save_figure_as_image(create_loading_plot(pca, feature_columns, pc_index=2)) if pca.n_components_ >= 3 else None
 
+                            # 選択されたサンプルの情報を準備
+                            sample_info = ""
+                            if labels is not None:
+                                if st.session_state.show_all_samples:
+                                    sample_info = f"すべてのサンプル ({len(features)}サンプル)"
+                                else:
+                                    selected_labels = st.session_state.selected_labels
+                                    if selected_labels:
+                                        total_selected_samples = sum(np.sum(labels == label) for label in selected_labels)
+                                        sample_info = f"選択されたラベル: {selected_labels} ({total_selected_samples}サンプル)"
+                                    else:
+                                        sample_info = "サンプルが選択されていません"
+                            else:
+                                sample_info = f"すべてのサンプル ({len(features)}サンプル)"
+
                             # レポートデータの準備
                             report_data = {
                                 'title': st.session_state.report_title,
@@ -694,6 +1128,8 @@ def main():
                                 'data_shape': f"{features.shape[0]}行 × {features.shape[1]}列",
                                 'feature_count': len(feature_columns),
                                 'label_info': f"{label_col}: {list(np.unique(labels))}" if labels is not None else "なし",
+                                'sample_selection': sample_info,
+                                'pca_data_type': "白色板補正後データ" if st.session_state.use_corrected_data_for_pca else "生データ",
                                 'pc1_variance': explained_variance_ratio[0],
                                 'pc2_variance': explained_variance_ratio[1],
                                 'total_variance': sum(explained_variance_ratio[:3]) if len(explained_variance_ratio) >= 3 else sum(explained_variance_ratio[:2]),
